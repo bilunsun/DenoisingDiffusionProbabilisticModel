@@ -1,0 +1,64 @@
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+
+
+lit_model:
+  _target_: src.lit_model.BaseModel 
+
+  models_config:
+    eps_model:
+      _target_: src.utils.models.TestModel
+      width: 28
+      height: 28
+      n_channels: 1
+
+  optimizer_config:
+    _target_: torch.optim.Adam
+    lr: 3e-4
+
+  diffusion_config:
+    beta_1: 1e-4
+    beta_T: 2e-2
+    T: 100
+
+  scheduler_config: null
+  use_weights_path: null
+
+
+callbacks: null
+
+
+logger:
+  _target_: pytorch_lightning.loggers.wandb.WandbLogger
+  project: TEST-ddpm
+
+
+datamodule:
+  _target_: src.utils.data.MNISTDataModule
+  batch_size: 64
+  data_dir: data
+  shuffle: True
+  num_workers: 8
+
+
+trainer:
+  _target_: pytorch_lightning.Trainer
+  deterministic: true
+  accelerator: gpu
+  devices: [0]
+  max_epochs: 500
+  # val_check_interval: 100
+
+
+# Restart training from checkpoint from PyTorch Lightning
+ckpt_path: null
+
+# Reproducibility
+seed: 123456
