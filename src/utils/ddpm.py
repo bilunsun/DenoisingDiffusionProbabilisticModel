@@ -1,6 +1,8 @@
 from typing import Optional
 
+import hydra
 import torch
+from omegaconf import DictConfig
 
 
 def gather(v: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
@@ -9,12 +11,11 @@ def gather(v: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
 
 
 class Diffusion:
-    def __init__(self, beta_range: list[float, float], T: int) -> None:
-        beta_1, beta_T = beta_range
-        self.beta = torch.linspace(beta_1, beta_T, T)
+    def __init__(self, schedule_config: DictConfig) -> None:
+        self.beta = hydra.utils.instantiate(schedule_config)
         self.alpha = 1.0 - self.beta
         self.alpha_bar = torch.cumprod(self.alpha, dim=0)
-        self.T = T
+        self.T = schedule_config.T
         self.device = torch.device("cpu")
 
     def to(self, device: torch.device) -> "Diffusion":
@@ -24,6 +25,19 @@ class Diffusion:
         self.device = device
 
         return self
+
+    @staticmethod
+    def _linear_beta_schedule(beta_1: float, beta_T: float, T: int) -> torch.Tensor:
+        return torch.linspace(beta_1, beta_T, T)
+
+    @staticmethod
+    def _cosine_beta_schedule(T: int, s: float) -> torch.Tensor:
+        x = torch.linspace(0, T, T + 1)
+        alpha_cumprod = torch.cos(((x / T) + s) / (1 + s) * torch.pi * 0.5) ** 2
+        alpha_cumprod = alpha_cumprod / alpha_cumprod[0]
+        beta = 1.0 - alpha_cumprod[1:] / alpha_cumprod[:-1]
+        beta = torch.clip(beta, 0.0001, 0.9999)
+        return beta
 
     def q_xt_x0(self, x0: torch.Tensor, t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         gathered = gather(v=self.alpha_bar, index=t)

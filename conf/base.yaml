@@ -13,39 +13,35 @@ lit_model:
   _target_: src.lit_model.BaseModel 
 
   models_config:
-    # eps_model:
-    #   _target_: src.utils.unet.UNet
-    #   image_channels: 1
+    
     eps_model:
       _target_: src.utils.models.SmolUNet
-      in_channels: 1
+      in_channels: 3
       out_channels: [64, 128, 256, 512]
-
-    # eps_model:
-    #   _target_: src.utils.models.TestModel
-    #   width: 28
-    #   height: 28
-    #   n_channels: 1
-    #   T: ${lit_model.diffusion_config.T}
 
   optimizer_config:
     _target_: torch.optim.Adam
-    lr: 2e-4
+    lr: 2e-5
 
   diffusion_config:
     _target_: src.utils.ddpm.Diffusion
-    beta_range: [0.0001, 0.02]
-    T: 1000 
+
+    schedule_config:
+      _target_: src.utils.ddpm.Diffusion._cosine_beta_schedule
+      s: 0.008 
+      T: 200
 
   scheduler_config: 
     _target_: torch.optim.lr_scheduler.CosineAnnealingLR
     T_max: ${trainer.max_epochs}
-    # T_max: 20000 
 
   use_weights_path: null
 
 
-callbacks: null
+callbacks:
+  model_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    monitor: val_loss
 
 
 logger:
@@ -54,10 +50,22 @@ logger:
 
 
 datamodule:
-  _target_: src.utils.data.MNISTDataModule
-  resize: 32
-  batch_size: 32 
-  data_dir: data
+  _target_: src.utils.data.DataModule
+
+  # dataset_config:
+  #   _target_: src.utils.data.get_image_folder_dataset
+  #   resize: 32 
+  #   data_dir: data
+  #   image_dir: PokemonDataLarge
+  #   val_len: 50 
+
+  dataset_config:
+    _target_: src.utils.data.get_celebA_dataset
+    resize: 32
+    data_dir: data
+    val_len: 50 
+
+  batch_size: 64
   shuffle: True
   num_workers: 8
 
@@ -67,9 +75,9 @@ trainer:
   deterministic: true
   accelerator: gpu
   devices: [0]
-  max_epochs: 50 
-  val_check_interval: 1000 
-  limit_val_batches: 50
+  max_epochs: 200 
+  limit_val_batches: 10
+  val_check_interval: 1000
   precision: 16
 
 

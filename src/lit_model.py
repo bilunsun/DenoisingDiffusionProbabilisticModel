@@ -45,7 +45,7 @@ class BaseModel(pl.LightningModule):
         )
 
         # Diffusion Configs
-        self.diffusion = hydra.utils.instantiate(self.hparams.diffusion_config)
+        self.diffusion = hydra.utils.instantiate(self.hparams.diffusion_config, _recursive_=False)
 
     def on_fit_start(self) -> None:
         self.diffusion = self.diffusion.to(self.device)
@@ -75,28 +75,22 @@ class BaseModel(pl.LightningModule):
         self.log("val_loss", loss, prog_bar=True, logger=True)
 
     def on_validation_epoch_end(self) -> None:
-        xt = torch.randn(1, 1, 32, 32, device=self.device)
+        xt = torch.randn(1, 3, 32, 32, device=self.device)
         saved_xt = [xt]
         # save_every = self.diffusion.T // 8
         save_indices = torch.linspace(0, self.diffusion.T, 10).round().long()
         for i in reversed(range(self.diffusion.T - 1)):
-            # print(i, xt.mean().item(), xt.std().item(), xt.min().item(), xt.max().item())
             t = torch.tensor([i], device=self.device).long()
             xt = self.p_sample(xt, t)
-            # xt = (xt - xt.mean()) / xt.std()
 
-            # if i % save_every == 0:
             if i in save_indices:
                 saved_xt.append(xt)
 
-        # Add the last denoised xt
         vis_xt = torch.cat(saved_xt)
-        # vis_xt = torch.cat(saved_xt + [xt])
-
         inv_trans = get_inverse_transform()
         vis_xt = inv_trans(vis_xt)
 
-        grid = make_grid(vis_xt, nrow=len(vis_xt), scale_each=True, normalize=True, value_range=(0, 1))
+        grid = make_grid(vis_xt, nrow=len(vis_xt), scale_each=True, normalize=True)
         self.logger.log_image(key="samples", images=[grid])
 
     def configure_optimizers(self):

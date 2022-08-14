@@ -37,7 +37,7 @@ def train(config: DictConfig) -> None:
 
     # DataModule
     log.info("Creating DataModule")
-    datamodule: pl.LightningDataModule = hydra.utils.instantiate(config.datamodule)
+    datamodule: pl.LightningDataModule = hydra.utils.instantiate(config.datamodule, _recursive_=False)
 
     # Trainer
     trainer: pl.Trainer = hydra.utils.instantiate(
