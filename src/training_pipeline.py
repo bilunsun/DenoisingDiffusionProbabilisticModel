@@ -1,12 +1,12 @@
+import random
+
 import hydra
 import pytorch_lightning as pl
-import random
 from omegaconf import DictConfig
 
-from src import utils
+from src.utils import get_logger
 
-
-log = utils.get_logger(__name__)
+log = get_logger(__name__)
 
 
 def train(config: DictConfig) -> None:

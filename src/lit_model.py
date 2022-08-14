@@ -3,12 +3,11 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig
-from torch.utils.data import DataLoader
-from typing import Optional
+from torchvision.utils import make_grid
 
 from src.utils import get_logger
-from src.utils.ddpm import gather
-
+from src.utils.data import get_inverse_transform
+from src.utils.ddpm import Diffusion, gather
 
 log = get_logger(__name__)
 
@@ -39,33 +38,24 @@ class BaseModel(pl.LightningModule):
                 setattr(self, model_name, model)
 
         self.optimizer = hydra.utils.instantiate(self.hparams.optimizer_config, params=self.parameters())
-        # self.scheduler = hydra.utils.instantiate(self.hparams.scheduler_config, optimizer=self.optimizer)
+        self.scheduler = (
+            hydra.utils.instantiate(self.hparams.scheduler_config, optimizer=self.optimizer)
+            if self.hparams.scheduler_config is not None
+            else None
+        )
 
         # Diffusion Configs
-        self.register_buffer(
-            name="beta",
-            tensor=torch.linspace(
-                start=self.hparams.diffusion_config.beta_1,
-                end=self.hparams.diffusion_config.beta_T,
-                steps=self.hparams.diffusion_config.T,
-            ),
-        )
-        self.register_buffer(name="alpha", tensor=1.0 - self.beta)
-        self.register_buffer(name="alpha_bar", tensor=torch.cumprod(input=self.alpha, dim=0))
-        self.T = self.hparams.diffusion_config.T
+        self.diffusion = hydra.utils.instantiate(self.hparams.diffusion_config)
 
     def on_fit_start(self) -> None:
-        self.beta = self.beta.to(self.device)
-        self.alpha = self.alpha.to(self.device)
-        self.alpha_bar = self.alpha_bar.to(self.device)
+        self.diffusion = self.diffusion.to(self.device)
 
     def training_step(self, batch, _) -> torch.Tensor:
-        x, _ = batch
-        t = torch.randint(low=0, high=self.T, size=(x.size(0),)).to(self.device)
+        x0, _ = batch
+        t = self.diffusion.sample_t(size=(x0.size(0),))
+        noise = torch.randn_like(x0)
 
-        noise = torch.randn_like(x)
-
-        xt = self.q_sample(x, t, eps=noise)
+        xt = self.diffusion.q_sample(x0, t, eps=noise)
         eps_theta = self.eps_model(xt, t)
 
         loss = F.mse_loss(noise, eps_theta)
@@ -74,40 +64,47 @@ class BaseModel(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, _) -> None:
-        x, _ = batch
-        t = torch.randint(low=0, high=self.T, size=(x.size(0),)).to(self.device)
-        noise = torch.randn_like(x).to(self.device)
+        x0, _ = batch
+        t = self.diffusion.sample_t(size=(x0.size(0),))
+        noise = torch.randn_like(x0)
 
-        xt = self.q_sample(x, t, eps=noise)
+        xt = self.diffusion.q_sample(x0, t, eps=noise)
         eps_theta = self.eps_model(xt, t)
 
         loss = F.mse_loss(noise, eps_theta)
         self.log("val_loss", loss, prog_bar=True, logger=True)
 
+    def on_validation_epoch_end(self) -> None:
+        xt = torch.randn(1, 1, 32, 32, device=self.device)
+        saved_xt = [xt]
+        # save_every = self.diffusion.T // 8
+        save_indices = torch.linspace(0, self.diffusion.T, 10).round().long()
+        for i in reversed(range(self.diffusion.T - 1)):
+            # print(i, xt.mean().item(), xt.std().item(), xt.min().item(), xt.max().item())
+            t = torch.tensor([i], device=self.device).long()
+            xt = self.p_sample(xt, t)
+            # xt = (xt - xt.mean()) / xt.std()
+
+            # if i % save_every == 0:
+            if i in save_indices:
+                saved_xt.append(xt)
+
+        # Add the last denoised xt
+        vis_xt = torch.cat(saved_xt)
+        # vis_xt = torch.cat(saved_xt + [xt])
+
+        inv_trans = get_inverse_transform()
+        vis_xt = inv_trans(vis_xt)
+
+        grid = make_grid(vis_xt, nrow=len(vis_xt), scale_each=True, normalize=True, value_range=(0, 1))
+        self.logger.log_image(key="samples", images=[grid])
+
     def configure_optimizers(self):
-        return self.optimizer
+        if self.scheduler is None:
+            return self.optimizer
 
-    def q_xt_x0(self, x0: torch.Tensor, t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        gathered = gather(v=self.alpha_bar, index=t)
-        mean = gathered**0.5 * x0
-        var = 1 - gathered
-
-        return mean, var
-
-    def q_sample(self, x0: torch.Tensor, t: torch.Tensor, eps: Optional[torch.Tensor] = None) -> torch.Tensor:
-        if eps is None:
-            eps = torch.randn_like(x0).to(self.device)
-
-        mean, var = self.q_xt_x0(x0, t)
-
-        return mean + (var**0.5) * eps
+        return [self.optimizer], [{"scheduler": self.scheduler, "interval": "epoch"}]
 
     def p_sample(self, xt: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         eps_theta = self.eps_model(xt, t)
-        alpha_bar = gather(v=self.alpha, index=t)
-        eps_coeff = (1 - alpha) / (1 - alpha_bar) ** 0.5
-        mean = 1 / (alpha**0.5) * (xt - eps_coeff * eps_theta)
-        var = gather(v=self.beta, index=t)
-        eps = torch.randn(xt.shape).to(self.device)
-
-        return mean + (var**0.5) * eps
+        return self.diffusion.p_sample(xt, t, eps_theta)

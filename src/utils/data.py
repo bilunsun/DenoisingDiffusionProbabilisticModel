@@ -4,15 +4,24 @@ from torchvision import transforms
 from torchvision.datasets import MNIST
 
 
-def get_transform():
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda t: (t * 2) - 1)])
+def get_transform(resize: int):
+    transform = transforms.Compose(
+        [transforms.ToTensor(), transforms.Resize(resize), transforms.Lambda(lambda t: (t * 2) - 1)]
+    )
+
+    return transform
+
+
+def get_inverse_transform():
+    transform = transforms.Compose([transforms.Lambda(lambda t: (t + 1) / 2)])
 
     return transform
 
 
 # TODO: Determine whether a val_set is needed
-def get_mnist_dataset(data_dir: str):
-    transform = get_transform()
+def get_mnist_dataset(data_dir: str, resize: int):
+    assert resize == 32
+    transform = get_transform(resize)
     train_set = MNIST(data_dir, train=True, transform=transform, download=True)
     val_set = MNIST(data_dir, train=False, transform=transform, download=True)
 
@@ -20,16 +29,19 @@ def get_mnist_dataset(data_dir: str):
 
 
 class MNISTDataModule(pl.LightningDataModule):
-    def __init__(self, batch_size: int, data_dir: str, shuffle: bool = True, num_workers: int = 1, **kwargs):
+    def __init__(
+        self, resize: int, batch_size: int, data_dir: str, shuffle: bool = True, num_workers: int = 1, **kwargs
+    ):
         super().__init__()
 
+        self.resize = resize
         self.batch_size = batch_size
         self.data_dir = data_dir
         self.shuffle = shuffle
         self.num_workers = num_workers
 
     def setup(self, stage=None):
-        self.train_set, self.val_set = get_mnist_dataset(self.data_dir)
+        self.train_set, self.val_set = get_mnist_dataset(self.data_dir, self.resize)
 
     def train_dataloader(self):
         return DataLoader(
