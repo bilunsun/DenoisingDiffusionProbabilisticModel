@@ -3,37 +3,15 @@ import math
 import torch
 from torch import nn
 
-# class SinusoidalPositionEmbeddings(nn.Module):
-#     def __init__(self, dim: int):
-#         super().__init__()
-#         self.dim = dim
-
-#     def forward(self, t: torch.Tensor):
-#         embeddings = math.log(10000) / (self.dim // 2 - 1)
-#         embeddings = torch.exp(torch.arange(self.dim // 2, device=t.device) * -embeddings)
-#         # embeddings = t[:, None] * embeddings[None, :]
-#         embeddings = t.unsqueeze(1) * embeddings.unsqueeze(0)
-#         embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
-#         return embeddings
-
 
 class TimeEmbedding(nn.Module):
-    """
-    ### Embeddings for $t$
-    """
-
     def __init__(self, n_channels: int):
-        """
-        * `n_channels` is the number of dimensions in the embedding
-        """
         super().__init__()
         self.n_channels = n_channels
-        # First linear layer
-        self.lin1 = nn.Linear(self.n_channels // 4, self.n_channels)
-        # Activation
-        self.act = nn.GELU()
-        # Second linear layer
-        self.lin2 = nn.Linear(self.n_channels, self.n_channels)
+
+        self.proj = nn.Sequential(
+            nn.Linear(self.n_channels // 4, self.n_channels), nn.GELU(), nn.Linear(self.n_channels, self.n_channels)
+        )
 
     def forward(self, t: torch.Tensor):
         half_dim = self.n_channels // 8
@@ -42,16 +20,32 @@ class TimeEmbedding(nn.Module):
         emb = t[:, None] * emb[None, :]
         emb = torch.cat((emb.sin(), emb.cos()), dim=1)
 
-        # Transform with the MLP
-        emb = self.act(self.lin1(emb))
-        emb = self.lin2(emb)
+        emb = self.proj(emb)
 
-        #
         return emb
 
 
 def same_conv(in_channels: int, out_channels: int) -> nn.Conv2d:
     return nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, padding=1)
+
+
+class ResNetBlock(nn.Module):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+
+        self.main_branch = nn.Sequential(
+            nn.GroupNorm(num_groups=4, num_channels=channels),
+            nn.SiLU(),
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups=4, num_channels=channels),
+            nn.SiLU(),
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1),
+        )
+
+        self.skip_branch = nn.Conv2d(channels, channels, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.main_branch(x) + self.skip_branch(x)
 
 
 class UNetBlock(nn.Module):
@@ -67,17 +61,19 @@ class UNetBlock(nn.Module):
         else:
             self.out = nn.Identity()
 
-        self.time_embedding = TimeEmbedding(out_channels)
+        self.time_proj = nn.Linear(256, out_channels)
 
-        self.convs = nn.Sequential(
-            same_conv(in_channels, out_channels), nn.GELU(), same_conv(out_channels, out_channels), nn.GELU()
-        )
+        self.in_conv = same_conv(in_channels, out_channels)
+        self.blocks = nn.ModuleList([ResNetBlock(out_channels)])
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> tuple[torch.Tensor]:
-        t = self.time_embedding(t)
-        x_res = self.convs(x)
-        x_res += t.reshape(x_res.size(0), x_res.size(1), 1, 1)
-        x = self.out(x_res)
+    def forward(self, x: torch.Tensor, time_embs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        time_embs = self.time_proj(time_embs)
+        x = self.in_conv(x)
+        x += time_embs.reshape(x.size(0), x.size(1), 1, 1)
+        for block in self.blocks:
+            x = block(x)
+        x_res = x
+        x = self.out(x)
         return x_res, x
 
 
@@ -87,30 +83,34 @@ class SmolUNet(nn.Module):
 
         channels = [in_channels] + out_channels[:-1]
 
+        self.time_embedding = TimeEmbedding(256)
+
         self.downs = nn.ModuleList([UNetBlock(ic, oc, maxpool=True) for ic, oc in zip(channels[:-1], channels[1:])])
         self.latent_up = UNetBlock(out_channels[-2], out_channels[-1], upsample=True)
         self.ups = nn.ModuleList([UNetBlock(c * 2, c, upsample=c != out_channels[0]) for c in out_channels[::-1][1:]])
         self.out = same_conv(out_channels[0], in_channels)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor):
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        time_embs = self.time_embedding(t)
         res = []
         for down in self.downs:
-            x_res, x = down(x, t)
+            x_res, x = down(x, time_embs)
             res.append(x_res)
 
-        _, x = self.latent_up(x, t)
+        _, x = self.latent_up(x, time_embs)
 
         for xr, up in zip(res[::-1], self.ups):
             x = torch.cat([xr, x], dim=1)
-            _, x = up(x, t)
+            _, x = up(x, time_embs)
 
         return self.out(x)
 
 
 def main():
-    smol_unet = SmolUNet(in_channels=1)
-    x = torch.randn(8, 1, 32, 32)
-    print(smol_unet(x).shape)
+    smol_unet = SmolUNet(in_channels=3)
+    x = torch.randn(8, 3, 32, 32)
+    t = torch.randint(0, 200, size=(x.size(0),))
+    print(smol_unet(x, t).shape)
 
 
 if __name__ == "__main__":

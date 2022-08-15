@@ -65,7 +65,7 @@ datamodule:
     data_dir: data
     val_len: 50 
 
-  batch_size: 64
+  batch_size: 32
   shuffle: True
   num_workers: 8
 
