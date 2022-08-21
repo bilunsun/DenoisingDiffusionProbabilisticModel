@@ -32,11 +32,11 @@ class Diffusion:
 
     @staticmethod
     def _cosine_beta_schedule(T: int, s: float) -> torch.Tensor:
-        x = torch.linspace(0, T, T + 1)
-        alpha_cumprod = torch.cos(((x / T) + s) / (1 + s) * torch.pi * 0.5) ** 2
-        alpha_cumprod = alpha_cumprod / alpha_cumprod[0]
-        beta = 1.0 - alpha_cumprod[1:] / alpha_cumprod[:-1]
-        beta = torch.clip(beta, 0.0001, 0.9999)
+        t = torch.linspace(0, T, T + 1)
+        alpha_bar = torch.cos(((t / T) + s) / (1 + s) * torch.pi / 2) ** 2
+        alpha_bar = alpha_bar / alpha_bar[0]
+        beta = 1.0 - alpha_bar[1:] / alpha_bar[:-1]
+        beta = torch.clip(beta, 0.001, 0.999)
         return beta
 
     def q_xt_x0(self, x0: torch.Tensor, t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -64,5 +64,4 @@ class Diffusion:
         mean = 1 / (alpha**0.5) * (xt - eps_coeff * eps_theta)
         var = gather(v=self.beta, index=t)
         eps = torch.randn(xt.shape, device=self.device)
-
         return mean + (var**0.5) * eps

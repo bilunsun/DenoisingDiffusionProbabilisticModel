@@ -2,6 +2,7 @@ import hydra
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
+from einops import rearrange, repeat
 from omegaconf import DictConfig
 from torchvision.utils import make_grid
 
@@ -50,6 +51,11 @@ class BaseModel(pl.LightningModule):
     def on_fit_start(self) -> None:
         self.diffusion = self.diffusion.to(self.device)
 
+        size = self.trainer.datamodule.dataset_config.resize
+        n_channels = next(iter(self.trainer.datamodule.train_dataloader()))[0].size(1)
+
+        self.val_xt = torch.randn(25, n_channels, size, size, device=self.device)
+
     def training_step(self, batch, _) -> torch.Tensor:
         x0, _ = batch
         t = self.diffusion.sample_t(size=(x0.size(0),))
@@ -75,22 +81,15 @@ class BaseModel(pl.LightningModule):
         self.log("val_loss", loss, prog_bar=True, logger=True)
 
     def on_validation_epoch_end(self) -> None:
-        xt = torch.randn(1, 3, 32, 32, device=self.device)
-        saved_xt = [xt]
-        # save_every = self.diffusion.T // 8
-        save_indices = torch.linspace(0, self.diffusion.T, 10).round().long()
-        for i in reversed(range(self.diffusion.T - 1)):
+        xt = self.val_xt
+
+        for i in reversed(range(self.diffusion.T)):
             t = torch.tensor([i], device=self.device).long()
+            t = repeat(t, "1 -> b", b=xt.size(0))
             xt = self.p_sample(xt, t)
 
-            if i in save_indices:
-                saved_xt.append(xt)
+        grid = make_grid(xt, nrow=5, scale_each=True, normalize=True)
 
-        vis_xt = torch.cat(saved_xt)
-        inv_trans = get_inverse_transform()
-        vis_xt = inv_trans(vis_xt)
-
-        grid = make_grid(vis_xt, nrow=len(vis_xt), scale_each=True, normalize=True)
         self.logger.log_image(key="samples", images=[grid])
 
     def configure_optimizers(self):
@@ -101,4 +100,16 @@ class BaseModel(pl.LightningModule):
 
     def p_sample(self, xt: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         eps_theta = self.eps_model(xt, t)
+
+        # # Try dynamic thresholding
+        # eps_theta = self.dynamic_thresholding(eps_theta)
+
         return self.diffusion.p_sample(xt, t, eps_theta)
+
+    def dynamic_thresholding(self, x: torch.Tensor, q: float = 0.995) -> torch.Tensor:
+        s = torch.quantile(rearrange(x, "b c h w -> b (c h w)"), q, dim=1)
+        s = torch.maximum(s, torch.ones_like(s))
+        s = repeat(s, "b -> b 1 1 1")
+        x = torch.clamp(x, -s, s) / s
+
+        return x
